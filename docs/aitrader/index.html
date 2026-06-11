@@ -495,6 +495,13 @@ const I18N={
     rs_bundled:'避雷门槛：bundler 41% > 30%，dev 持仓 25% > 10%，top10 55%。',
     rs_rugpull:'避雷门槛：honeypot 检测命中，直接否决。',
     rs_inject:'共识门槛：聪明钱+KOL 0 < 1。（币名提示注入已消毒）',
+    bk_safety:(iss)=>`避雷门槛：${iss}`,
+    bk_safety_generic:'蜜罐 / 税 / rug / 筹码 未过',
+    bk_consensus:(smc,degen,kol)=>`共识门槛：聪明钱+KOL ${smc} 不足（degen ${degen} / KOL ${kol}）`,
+    bk_rank:'排序门槛：分数偏低被砍',
+    bk_llm_reject:'LLM 否决',
+    bk_llm_late:'LLM 否决：late（1h 过热）',
+    bk_filtered:'已过滤',
     toast_chain_switched:(l)=>`已切换到 ${l}`, toast_chain_fail:(m)=>`切链失败：${m}`,
     toast_be_fail:(m)=>`后端连接失败，已暂停轮询：${m}`,
     toast_be_switched:'已切到本地后端：填 key 保存后开始轮询',
@@ -630,6 +637,13 @@ const I18N={
     rs_bundled:'Safety gate: bundler 41% > 30%, dev holding 25% > 10%, top10 55%.',
     rs_rugpull:'Safety gate: honeypot detected, rejected outright.',
     rs_inject:'Consensus gate: smart-money+KOL 0 < 1. (token-name prompt injection sanitized)',
+    bk_safety:(iss)=>`Safety gate: ${iss}`,
+    bk_safety_generic:'honeypot / tax / rug / holdings check failed',
+    bk_consensus:(smc,degen,kol)=>`Consensus gate: smart-money+KOL ${smc} too few (degen ${degen} / KOL ${kol})`,
+    bk_rank:'ML ranking: score too low, cut',
+    bk_llm_reject:'LLM rejected',
+    bk_llm_late:'LLM rejected: late (overheated)',
+    bk_filtered:'Filtered',
     toast_chain_switched:(l)=>`Switched to ${l}`, toast_chain_fail:(m)=>`Chain switch failed: ${m}`,
     toast_be_fail:(m)=>`Backend connection failed, polling paused: ${m}`,
     toast_be_switched:'Switched to local backend: save your key to start polling',
@@ -768,7 +782,22 @@ const GATE_ICONS=['scan','shield','users','filter','brain','target'];
 const gateName=i=>t('gate'+i);
 
 /* 演示/真实数据里 thesis/reason/exit/signal 可能是 i18n key（demo）或后端原文（live），统一取词 */
-const reasonOf=r=>r.reasonK?t(r.reasonK):(r.reason||'');
+/* 后端模式：理由是 app.py 发的中文。中文 UI 用原文（最准）；英文 UI 用结构化字段重建英文理由。
+   DEMO 模式有 reasonK 直接取词。 */
+function buildReason(r){
+  switch(r.died){
+    case 1:{const iss=[];if(r.hp)iss.push('honeypot');if(r.bund>0.30)iss.push('bundler '+P(r.bund));if(r.dev>0.10)iss.push('dev '+P(r.dev));if(r.top10>0.40)iss.push('top10 '+P(r.top10));return t('bk_safety',iss.length?iss.join(' / '):t('bk_safety_generic'));}
+    case 2:return t('bk_consensus',r.smc,r.degen,r.kol);
+    case 3:return t('bk_rank');
+    case 4:return r.crowd==='late'?t('bk_llm_late'):t('bk_llm_reject');
+    default:return t('bk_filtered');
+  }
+}
+function reasonOf(r){
+  if(r.reasonK)return t(r.reasonK);          // DEMO：i18n key
+  if(lang==='zh'&&r.reason)return r.reason;  // 后端中文 UI：用后端原文
+  return buildReason(r);                      // 后端英文 UI（或无原文）：重建
+}
 const thesisOf=r=>r.thesisK?t(r.thesisK):(r.thesis||'');
 const exitOf=r=>r.exitK?t(r.exitK):(r.exit||t('exit_ladder'));
 const sigText=s=>s.k?t(s.k):s.t;
