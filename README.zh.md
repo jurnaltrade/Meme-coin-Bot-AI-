@@ -14,9 +14,9 @@
 
 ## Demos
 
-| Demo | 说明 | Demo |
-|---|---|---|
-| [aitrader](aitrader/) | 基于 GMGN Skills/MCP 的本地 memecoin 筛选 + 一键成交看板：确定性规则抓全 → 评分砍狠 → LLM 只解释幸存者 → 你按下成交。本地运行见 [aitrader/README.md](aitrader/README.md)。 | https://gmgnai.github.io/skillmarket-demos/aitrader/ |
+| Demo | 说明 | Demo | 预览图 |
+|---|---|---|---|
+| [aitrader](aitrader/) | 基于 GMGN Skills/MCP 的本地 memecoin 筛选 + 一键成交看板：确定性规则抓全 → 评分砍狠 → LLM 只解释幸存者 → 你按下成交。本地运行见 [aitrader/README.md](aitrader/README.md)。 | https://gmgnai.github.io/skillmarket-demos/aitrader/ | <img src="static/aitrader_zh.png" alt="aitrader 截图" width="360"> |
 
 ---
 

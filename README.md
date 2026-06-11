@@ -14,9 +14,9 @@ Community-contributed demos built with the GMGN OpenAPI, provided for reference 
 
 ## Demos
 
-| Demo | Description | Demo |
-|---|---|---|
-| [aitrader](aitrader/) | Local memecoin screening + one-click trading dashboard built on GMGN Skills/MCP: deterministic rules cast wide → scoring cuts hard → LLM only explains survivors → you press to trade. See [aitrader/README.md](aitrader/README.md) to run it locally. | https://gmgnai.github.io/skillmarket-demos/aitrader/ |
+| Demo | Description | Demo | Screenshot |
+|---|---|---|---|
+| [aitrader](aitrader/) | Local memecoin screening + one-click trading dashboard built on GMGN Skills/MCP: deterministic rules cast wide → scoring cuts hard → LLM only explains survivors → you press to trade. See [aitrader/README.md](aitrader/README.md) to run it locally. | https://gmgnai.github.io/skillmarket-demos/aitrader/ | <img src="static/aitrader_en.png" alt="aitrader screenshot" width="360"> |
 
 ---
 
