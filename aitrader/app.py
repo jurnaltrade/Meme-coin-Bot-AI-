@@ -39,6 +39,7 @@ STATIC_DIR = HERE / "static"
 OUT_DIR = HERE / "outputs"
 LOG_PATH = OUT_DIR / "trade_decisions.jsonl"
 POSITIONS_PATH = OUT_DIR / "positions.json"   # 持仓落盘：reload/重启不丢，与筛选榜完全独立
+TRENDING_CMDS_PATH = OUT_DIR / "trending_cmds.json"   # 按链热榜命令落盘：用户改过即持久，重启/刷新不回默认
 ENV_PATH = pathlib.Path.home() / ".config" / "gmgn" / ".env"
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -171,6 +172,23 @@ def load_env() -> dict:
             v = v.replace("\\n", "\n")         # 字面 \n → 真实换行（还原多行 PEM）
             out[k.strip()] = v
     return out
+
+def load_trending_cmds() -> dict:
+    """读落盘的按链热榜命令覆盖（用户改过的；空/缺失则各链回默认）。"""
+    if not TRENDING_CMDS_PATH.exists():
+        return {}
+    try:
+        data = json.loads(TRENDING_CMDS_PATH.read_text())
+        return {k: v for k, v in data.items() if isinstance(v, str)} if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+def save_trending_cmds(cmds: dict):
+    try:
+        OUT_DIR.mkdir(parents=True, exist_ok=True)
+        TRENDING_CMDS_PATH.write_text(json.dumps(cmds, ensure_ascii=False))
+    except Exception:
+        pass
 
 # ──────────────────────────────────────────────────────────────────────────
 # 2. GMGN 适配器
@@ -628,7 +646,7 @@ class AppState:
         self._trending_cache: dict[str, tuple] = {}             # chain -> (monotonic_ts, rows)
         self.risk = RiskManager()
         self.positions: list[dict] = []          # 每项含 entry 快照 + cycles + chain
-        self.trending_cmds: dict[str, str] = {}   # 按链记忆热榜命令
+        self.trending_cmds: dict[str, str] = load_trending_cmds()   # 按链热榜命令（落盘持久，重启不丢）
         # 启动即读环境 key：有 API key 就走真实数据适配器（交易仍要 LIVE 模式 + 私钥）。
         env = load_env()
         if env.get("GMGN_API_KEY"):
@@ -663,6 +681,13 @@ class AppState:
 
     def set_trending_cmd(self, chain: str, cmd: str):
         self.trending_cmds[chain] = cmd
+        save_trending_cmds(self.trending_cmds)        # 落盘：重启/刷新不回默认
+
+    def reset_trending_cmd(self, chain: str):
+        """重置该链热榜命令为默认（删除用户覆盖 + 作废缓存 + 落盘）。"""
+        self.trending_cmds.pop(chain, None)
+        self._trending_cache.pop(chain, None)
+        save_trending_cmds(self.trending_cmds)
 
     def trending_rows(self, chain: str) -> list:
         """取某链热榜行：TTL 内复用缓存（同链多 tab 共享一次 cli），过期才真打 cli。"""
@@ -1058,8 +1083,17 @@ def api_settings(s: SettingsIn):
             # 安全护栏：只允许热榜命令，禁止借此执行任意命令
             if parts[:3] != ["gmgn-cli", "market", "trending"]:
                 raise HTTPException(400, "命令必须以 `gmgn-cli market trending` 开头")
-            ST.set_trending_cmd(ch, cmd)
+            ST.set_trending_cmd(ch, cmd)         # set_trending_cmd 内已落盘
             ST._trending_cache.pop(ch, None)     # 命令变了，作废该链缓存
+    return dict(ok=True, trending_cmd=ST.get_trending_cmd(ch))
+
+@app.post("/api/settings/reset")
+def api_settings_reset(c: ChainIn):
+    """重置该链热榜命令为默认（删除落盘的用户覆盖），返回恢复后的默认命令。"""
+    _block_if_public()
+    ch = valid_chain(c.chain)
+    with ST.lock:
+        ST.reset_trending_cmd(ch)
     return dict(ok=True, trending_cmd=ST.get_trending_cmd(ch))
 
 @app.post("/api/run")

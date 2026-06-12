@@ -129,7 +129,8 @@ aitrader/
 │   └── index.html         # = static/index.html 副本，GitHub Pages 发布 /docs
 ├── outputs/
 │   ├── trade_decisions.jsonl   # 运行时生成: SCREEN/FILTER/BUY/SELL/UNMONITOR 日志(append-only)
-│   └── positions.json          # 运行时生成: 持仓状态落盘(覆盖写, 启动加载, reload/重启不丢)
+│   ├── positions.json          # 运行时生成: 持仓状态落盘(覆盖写, 启动加载, reload/重启不丢)
+│   └── trending_cmds.json      # 运行时生成: 按链热榜命令覆盖(用户改过即落盘, 重启/刷新不回默认; 点重置才删回默认)
 ├── scripts/git-hooks/pre-commit  # 自动 cp static/index.html → docs/index.html(随仓库分发; 需 git config core.hooksPath scripts/git-hooks 启用一次)
 ├── README.md
 └── SPEC.md                # 本文件
@@ -175,9 +176,11 @@ aitrader/
 ```
 只回该链热榜命令；**不再改任何全局状态**（链已随各请求传递）。前端切链不再调它。
 
-### `GET/POST /api/settings`（热榜命令 / 按链记忆）
+### `GET/POST /api/settings` + `POST /api/settings/reset`（热榜命令 / 按链记忆 · 持久）
 GET `?chain=<链>` 返回该链 `trending_cmd` + `default_trending_cmd` + `poll_interval_s`。
-POST `{trending_cmd, chain}` 保存到指定链（`ST.trending_cmds[chain]`，并作废该链 trending 缓存）；**安全护栏**：命令必须以 `gmgn-cli market trending` 开头，否则 400。
+POST `{trending_cmd, chain}` 保存到指定链（`ST.trending_cmds[chain]`，**落盘 `trending_cmds.json` 持久**、作废该链缓存）；**安全护栏**：命令必须以 `gmgn-cli market trending` 开头，否则 400。
+POST `/api/settings/reset {chain}` **重置该链回默认**（删除落盘覆盖 + 作废缓存），返回恢复后的 `trending_cmd`。
+> 持久语义：用户改过的命令**重启后端 / 刷新页面都不回默认**；只有点齿轮弹窗右上角「↺ 重置」按钮才删回默认（顶部 toast「筛选条件已恢复默认 / Filters restored to default」）。
 
 ### `POST /api/run`
 请求 `{chain}`；跑该链一轮筛选 + 该链持仓监控。
