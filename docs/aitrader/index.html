@@ -1159,6 +1159,8 @@ function onLive(cb){
   liveMode=false;applyLiveLabel();
 }
 const val=id=>document.getElementById(id).value.trim();
+// 从后端错误响应取 FastAPI 的 detail（如「链上买入失败：缺签名密钥」），取不到才回 HTTP 码
+async function errDetail(resp){const j=await resp.json().catch(()=>({}));return j.detail||('HTTP '+resp.status);}
 async function saveCfg(){
   const body={api_key:val('apiKey'),signing_key:val('signKey'),chain:curChain,mode:liveMode?'LIVE':'SHADOW'};
   if(!body.api_key&&!beReady){toast(t('toast_need_key'),'err');return;}  // 后端已有环境 key 则可留空
@@ -1196,7 +1198,7 @@ async function doBuy(){
     const bs=document.getElementById('buyState');bs.innerHTML='<span class="spin"></span>'+t('buy_ordering');
     try{
       const resp=await fetch(API+'/api/buy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({address:r.address||r.addr,size_sol:size})});
-      if(!resp.ok)throw new Error('HTTP '+resp.status);
+      if(!resp.ok)throw new Error(await errDetail(resp));   // 带后端原因(如缺签名密钥/风控硬拦)
       const j=await resp.json();
       // 文案以后端真实返回的 status 为准（SHADOW 不上链就别说“已真实下单”）
       const filledLive=!String(j.status||'').includes('SHADOW');
@@ -1222,7 +1224,7 @@ function doSellPos(i){
   const p=POS[i];if(!p)return;
   if(source==='backend'){
     fetch(API+'/api/sell',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({address:p.address||p.addr})})
-      .then(r=>{if(!r.ok)throw new Error('HTTP '+r.status);toast(t('toast_sell_sent',p.sym),'ok');scanCycle();})
+      .then(async r=>{if(!r.ok)throw new Error(await errDetail(r));toast(t('toast_sell_sent',p.sym),'ok');scanCycle();})
       .catch(e=>toast(t('toast_sell_fail',e.message),'err'));
     return;
   }

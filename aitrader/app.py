@@ -90,11 +90,24 @@ CFG = {
     # 逃生预警阈值（severity 0-100）
     "escape_severity": 70,
 }
-NATIVE = "So11111111111111111111111111111111111111112"
+# 各链「原生/币种」token 地址（买入时作 input、卖出时作 output）。
+# 地址来自 gmgn-cli 权威 Chain Currencies 表，绝不能凭记忆改（错一个字符会静默失败）。
+NATIVE_TOKEN = {
+    "sol":  "So11111111111111111111111111111111111111112",
+    "bsc":  "0x0000000000000000000000000000000000000000",   # BNB native
+    "base": "0x0000000000000000000000000000000000000000",   # ETH native
+    "eth":  "0x0000000000000000000000000000000000000000",   # ETH native
+}
+# 原生币最小单位精度：SOL=9(lamports)，EVM 原生币=18(wei)。买入金额 = size * 10**decimals。
+NATIVE_DECIMALS = {"sol": 9, "bsc": 18, "base": 18, "eth": 18}
+def native_token(chain): return NATIVE_TOKEN.get(chain, NATIVE_TOKEN["sol"])
+def native_decimals(chain): return NATIVE_DECIMALS.get(chain, 9)
 
-# 安全护栏：绝不提交链上交易（用户需求：买入按钮做假动作）。
-# 置 True 时，即使配了 private key、即使 mode=LIVE，也强制走 SHADOW、绝不调 swap。
-LIVE_TRADING_DISABLED = True
+# 安全护栏：置 True 时即使配了 private key、即使 mode=LIVE，也强制走 SHADOW、绝不调 swap。
+# 已解锁(False)：LIVE 模式 + 已配 GMGN_PRIVATE_KEY 时，「一键买入/平仓」会真实发单、动用资金、不可逆。
+# 仍是人在环：只有用户点按钮才成交；SHADOW 是默认安全态，需手动切 LIVE 才真发。
+# ⚠️ 真实下单要求 ~/.config/gmgn/.env 里 GMGN_PRIVATE_KEY 非空（签名密钥），否则 gmgn-cli 报错。
+LIVE_TRADING_DISABLED = False
 
 # 公开演示（只读广播）：设环境变量 PUBLIC_DEMO=1 开启。用于把看板挂公网给不特定访客看
 # 真实筛选数据，同时把后端收敛成纯只读：
@@ -158,6 +171,7 @@ class GMGNAdapter:
     def portfolio_stats(self, wallet) -> dict: raise NotImplementedError
     def swap(self, **kw) -> dict: raise NotImplementedError
     def order_get(self, order_id) -> dict: raise NotImplementedError
+    def wallet_address(self) -> str: raise NotImplementedError
 
 
 class LiveGMGN(GMGNAdapter):
@@ -165,6 +179,7 @@ class LiveGMGN(GMGNAdapter):
     def __init__(self, chain="sol"):
         self.chain = chain
         self.env = {**os.environ, **load_env()}
+        self._wallet_cache: dict[str, str] = {}   # chain -> bound wallet address
 
     def _cli(self, *args) -> dict:
         cmd = ["gmgn-cli", *args, "--chain", self.chain, "--raw"]
@@ -224,10 +239,34 @@ class LiveGMGN(GMGNAdapter):
         return self._cli("token", "holders", "--address", addr)
 
     def portfolio_stats(self, w):   return self._cli("portfolio", "stats", "--wallet", w)
-    def swap(self, from_wallet, input_token, output_token, amount, slippage=0.01):
-        return self._cli("swap", "--from", from_wallet, "--input-token", input_token,
-                         "--output-token", output_token, "--amount", str(amount),
-                         "--slippage", str(slippage))
+
+    def wallet_address(self) -> str:
+        """取绑定到 API Key 的本链钱包地址（swap 的 --from 必须与 Key 绑定一致）。
+        portfolio info 不接受 --chain，一次返回所有链，按 self.chain 命中。"""
+        if self.chain in self._wallet_cache:
+            return self._wallet_cache[self.chain]
+        # portfolio info 无 --chain 参数：直接调，不经 _cli（_cli 会硬加 --chain）
+        out = subprocess.run(["gmgn-cli", "portfolio", "info", "--raw"],
+                             capture_output=True, text=True, timeout=25, env=self.env)
+        if out.returncode != 0:
+            raise RuntimeError(f"gmgn-cli error: {out.stderr.strip()}")
+        data = json.loads(out.stdout)
+        for w in data.get("wallets", []):
+            if w.get("chain") == self.chain and w.get("address"):
+                self._wallet_cache[self.chain] = w["address"]
+                return w["address"]
+        raise RuntimeError(f"未找到 {self.chain} 链绑定钱包（检查 API Key 绑定）")
+
+    def swap(self, from_wallet, input_token, output_token, amount=None,
+             percent=None, slippage=0.01):
+        # amount 与 percent 互斥：买入用 amount(最小单位)；卖出用 percent(币种非 currency 时)。
+        args = ["swap", "--from", from_wallet, "--input-token", input_token,
+                "--output-token", output_token, "--slippage", str(slippage)]
+        if percent is not None:
+            args += ["--percent", str(percent)]
+        else:
+            args += ["--amount", str(amount)]
+        return self._cli(*args)
     def order_get(self, order_id):  return self._cli("order", "get", "--order-id", order_id)
 
 
@@ -315,8 +354,12 @@ class MockGMGN(GMGNAdapter):
     def portfolio_stats(self, wallet):
         return dict(wallet=wallet, win_rate=0.6, realized_pnl_sol=round(random.uniform(5, 200), 1))
 
+    def wallet_address(self) -> str:
+        return "MOCKWALLET1111111111111111111111111111111111"
+
     def swap(self, **kw):
-        return dict(order_id="MOCK-" + str(random.randint(10000, 99999)), status="pending")
+        return dict(order_id="MOCK-" + str(random.randint(10000, 99999)),
+                    hash="MOCKHASH" + str(random.randint(10000, 99999)), status="pending")
 
     def order_get(self, order_id):
         return dict(order_id=order_id, status="confirmed", filled=True)
@@ -809,14 +852,23 @@ def do_buy(address: str, size_sol: float) -> dict:
     except Exception:
         entry_price = 0.0
 
-    # 安全护栏：绝不提交链上交易。LIVE_TRADING_DISABLED 为真时无论模式都走 SHADOW。
+    # LIVE 且未锁：真实买入（input=本链原生币，output=目标币，amount=最小单位）。
     if ST.mode == "LIVE" and not LIVE_TRADING_DISABLED:
-        order = g.swap(from_wallet="<my-wallet>", input_token=NATIVE, output_token=address,
-                       amount=int(size_sol * 1e9), slippage=0.01)
-        st = g.order_get(order["order_id"])
-        status = st.get("status", "pending")
+        try:
+            wallet = g.wallet_address()              # 绑定 Key 的本链钱包，--from 必须一致
+            amount = int(size_sol * (10 ** native_decimals(ST.chain)))
+            order = g.swap(from_wallet=wallet, input_token=native_token(ST.chain),
+                           output_token=address, amount=amount, slippage=0.01)
+        except Exception as e:                       # gmgn-cli 报错(如缺签名密钥)→ 不建仓，回清晰错误
+            log("BUY_FAIL", symbol, str(e))
+            raise HTTPException(502, f"链上买入失败：{e}")
+        oid = order.get("order_id")
+        st = g.order_get(oid) if oid else order      # 轮询一次最新状态
+        status = st.get("status", order.get("status", "pending"))
+        if order.get("hash"):
+            status = f"{status} · {order['hash']}"    # 带上链上 tx hash 便于核对
     else:
-        status = "SHADOW（未真实发送，链上交易已锁）"
+        status = "SHADOW（未真实发送，需切 LIVE + 配签名密钥）"
 
     ST.positions.append(dict(symbol=symbol, address=address, size_sol=round(size_sol, 4),
                              pnl=0.0, cycles=0, entry=entry, chain=ST.chain,
@@ -831,8 +883,14 @@ def do_sell(address: str) -> dict:
         raise HTTPException(404, "未找到该持仓")
     p = ST.positions[idx]
     if ST.mode == "LIVE" and not LIVE_TRADING_DISABLED:
-        ST.adapter.swap(from_wallet="<my-wallet>", input_token=address,
-                        output_token=NATIVE, amount="ALL", slippage=0.02)
+        g = ST.adapter
+        # 清仓：input=持仓币(非 currency，可用 percent)，output=本链原生币，percent=100 全清。
+        try:
+            g.swap(from_wallet=g.wallet_address(), input_token=address,
+                   output_token=native_token(ST.chain), percent=100, slippage=0.02)
+        except Exception as e:                       # 卖出失败→保留持仓，回清晰错误
+            log("SELL_FAIL", p["symbol"], str(e))
+            raise HTTPException(502, f"链上卖出失败：{e}")
     pnl = p.get("pnl", 0)
     if pnl < 0:
         ST.risk.consec_losses += 1
