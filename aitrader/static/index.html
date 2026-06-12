@@ -512,6 +512,7 @@ const I18N={
     toast_buy_demo:(live,sym,size)=>`${live?'已真实下单 ':'已记录(SHADOW) '}${sym} ${size} SOL · 已加入逃生监控`,
     buy_log_reason:(live,size,exit)=>`${live?'LIVE 真实成交 ':'SHADOW 记录 '}${size} SOL · ${exit}`,
     toast_buy_fail:(m)=>`下单失败：${m}`, buy_ordering:'下单中…',
+    toast_trade_locked:'链上交易已锁（LIVE_TRADING_DISABLED），无法切到 LIVE。后端始终走 SHADOW。',
     sell_title:(sym)=>`平仓 ${sym}`,
     sell_msg:(sym,size,esc)=>`平仓 <b>${sym}</b>（${size} SOL）？`+(esc?'<br><span style="color:var(--clay)">⚠ 已触发逃生信号，建议立即平仓。</span>':'')+'<br><span style="color:var(--dim2);font-size:11.5px">SHADOW 模式下仅记录、不真实发单。</span>',
     toast_sell_sent:(sym)=>`已发送平仓 ${sym}`, toast_sell_fail:(m)=>`平仓失败：${m}`,
@@ -647,6 +648,7 @@ const I18N={
     toast_buy_demo:(live,sym,size)=>`${live?'Order placed ':'Recorded (SHADOW) '}${sym} ${size} SOL · added to escape monitor`,
     buy_log_reason:(live,size,exit)=>`${live?'LIVE filled ':'SHADOW logged '}${size} SOL · ${exit}`,
     toast_buy_fail:(m)=>`Order failed: ${m}`, buy_ordering:'Placing order…',
+    toast_trade_locked:'On-chain trading is locked (LIVE_TRADING_DISABLED); cannot switch to LIVE. The backend always runs SHADOW.',
     sell_title:(sym)=>`Close ${sym}`,
     sell_msg:(sym,size,esc)=>`Close <b>${sym}</b> (${size} SOL)?`+(esc?'<br><span style="color:var(--clay)">⚠ Escape signal triggered, close now.</span>':'')+'<br><span style="color:var(--dim2);font-size:11.5px">In SHADOW, records only, no real order.</span>',
     toast_sell_sent:(sym)=>`Sell sent ${sym}`, toast_sell_fail:(m)=>`Close failed: ${m}`,
@@ -694,7 +696,7 @@ const fill=n=>`<svg viewBox="0 0 24 24" fill="currentColor" stroke="none">${I[n]
 /* 同源请求：后端(127.0.0.1:8000)托管本页时走相对路径，经隧道访问也回到本机后端；
    仅 file:// 直接打开时回退到本地端口。连不上(纯静态/GitHub Pages)→ 自动 DEMO。 */
 const API=location.protocol==='file:'?"http://127.0.0.1:8000":"";
-let source="demo", bePolling=false, liveMode=false;
+let source="demo", bePolling=false, liveMode=false, tradingLocked=false;
 let pollMs=5600, pollTimer=null, defaultTrendCmd="", curChain="sol", beReady=false, buyAmount=0.01;
 let onlyHeld=false;            // TOKEN 旁警告图标：只看当前持仓的币
 function toggleOnlyHeld(){
@@ -1147,6 +1149,9 @@ function applyLiveLabel(){
 function onLive(cb){
   if(cb.checked){
     cb.checked=false;                          // 先回退，确认后再开
+    if(tradingLocked){                         // 后端硬锁：切 LIVE 也只会走 SHADOW，从源头拦住，别给用户假象
+      toast(t('toast_trade_locked'),'err');return;
+    }
     confirmDialog(t('confirm_live_title'),t('confirm_live_msg'),
       ()=>{document.getElementById('liveTg').checked=true;liveMode=true;applyLiveLabel();});
     return;
@@ -1192,7 +1197,10 @@ async function doBuy(){
     try{
       const resp=await fetch(API+'/api/buy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({address:r.address||r.addr,size_sol:size})});
       if(!resp.ok)throw new Error('HTTP '+resp.status);
-      toast(t('toast_buy',liveMode,r.sym,size),'ok');closeBuy();scanCycle();
+      const j=await resp.json();
+      // 文案以后端真实返回的 status 为准（SHADOW 不上链就别说“已真实下单”）
+      const filledLive=!String(j.status||'').includes('SHADOW');
+      toast(t('toast_buy',filledLive,j.symbol||r.sym,size),'ok');closeBuy();scanCycle();
     }catch(e){bs.textContent='';toast(t('toast_buy_fail',e.message),'err');}
     return;
   }
@@ -1312,7 +1320,7 @@ async function autoConnect(){
   updateAmtUnit();
   try{
     const r=await fetch(API+'/api/status'); if(!r.ok)throw 0;
-    const d=await r.json(); beReady=!!d.has_key;
+    const d=await r.json(); beReady=!!d.has_key; tradingLocked=!!d.trading_locked;
     if(d.public_demo){
       // 公开只读演示：后端定时广播真实筛选缓存。锁定 UI 为只读，链跟随后端。
       document.body.classList.add('publicro');
