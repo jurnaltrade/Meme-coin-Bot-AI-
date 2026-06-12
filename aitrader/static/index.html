@@ -514,6 +514,8 @@ const I18N={
     buy_riskwarn:'⚠ 组合风控：买入后将达到并发/敞口上限。建议先平掉一个持仓再买，或调小数量。',
     buy_mode_live:'当前 LIVE 模式：确认后将经签名密钥真实下单。', buy_mode_shadow:'当前 SHADOW 模式：确认后只记录意图、不真实发单。',
     toast_buy:(live,sym,size)=>`${live?'已真实下单 ':'已记录(SHADOW) '}${sym} ${size} SOL`,
+    toast_buy_v2:(kind,sym,size,st)=>kind==='sh'?`已记录(SHADOW，未上链) ${sym} ${size}`:kind==='live'?`✓ 已成交 ${sym} ${size} · ${st}`:`已提交·待确认（尚未成交）${sym} ${size} · ${st}`,
+    toast_mode_reverted:'后端已回到 SHADOW（可能重启过）：买卖只记录、不上链。要真实交易请重新切 LIVE。',
     toast_buy_demo:(live,sym,size)=>`${live?'已真实下单 ':'已记录(SHADOW) '}${sym} ${size} SOL · 已加入逃生监控`,
     buy_log_reason:(live,size,exit)=>`${live?'LIVE 真实成交 ':'SHADOW 记录 '}${size} SOL · ${exit}`,
     toast_buy_fail:(m)=>`下单失败：${m}`, buy_ordering:'下单中…',
@@ -652,6 +654,8 @@ const I18N={
     buy_riskwarn:'⚠ Portfolio risk: buying will hit the concurrency/exposure cap. Close a position first or reduce the size.',
     buy_mode_live:'LIVE mode: confirm to place a real order via the signing key.', buy_mode_shadow:'SHADOW mode: confirm to record intent only, no real order.',
     toast_buy:(live,sym,size)=>`${live?'Order placed ':'Recorded (SHADOW) '}${sym} ${size} SOL`,
+    toast_buy_v2:(kind,sym,size,st)=>kind==='sh'?`Recorded (SHADOW, not on-chain) ${sym} ${size}`:kind==='live'?`✓ Filled ${sym} ${size} · ${st}`:`Submitted · pending (not yet filled) ${sym} ${size} · ${st}`,
+    toast_mode_reverted:'Backend is back to SHADOW (likely restarted): buy/sell only logs, no on-chain. Switch to LIVE again for real trades.',
     toast_buy_demo:(live,sym,size)=>`${live?'Order placed ':'Recorded (SHADOW) '}${sym} ${size} SOL · added to escape monitor`,
     buy_log_reason:(live,size,exit)=>`${live?'LIVE filled ':'SHADOW logged '}${size} SOL · ${exit}`,
     toast_buy_fail:(m)=>`Order failed: ${m}`, buy_ordering:'Placing order…',
@@ -1059,6 +1063,7 @@ async function scanCycle(){
       if(!r.ok)throw new Error('HTTP '+r.status);
       const data=await r.json();
       if(source!=='backend'||reqChain!==curChain)return;   // 期间切走源/切了链 → 丢弃，不拿旧链数据覆盖
+      syncBackendMode(data.mode);            // 后端真实 mode 同步到开关（重启后端会回 SHADOW，避免开关停留 LIVE 误导）
       const {list,risk,positions}=normalize(data);
       loadingScreen=false;                 // 拿到后端响应，结束骨架
       T=list; RISK=risk; if(positions)POS=positions; if(sel>=T.length)sel=-1;
@@ -1160,6 +1165,18 @@ async function savePipe(){
     if(source==='backend'&&bePolling)scanCycle();
   }catch(e){ss.textContent='';toast(t('toast_pipe_fail',e.message),'err');}
 }
+// 后端真实 mode → 同步前端 LIVE/SHADOW 开关。后端重启会回 SHADOW；若开关停在 LIVE，
+// 此处翻回 SHADOW 并弹一次警示，杜绝「以为 LIVE、实际 SHADOW 只记录」的误买。
+function syncBackendMode(m){
+  if(typeof m!=='string')return;
+  const beLive=(m==='LIVE');
+  if(beLive===liveMode)return;
+  const wasLive=liveMode;
+  liveMode=beLive;
+  const tg=document.getElementById('liveTg'); if(tg)tg.checked=beLive;
+  applyLiveLabel();
+  if(wasLive&&!beLive)toast(t('toast_mode_reverted'),'err');   // LIVE→SHADOW 自动回落，提醒用户
+}
 function applyLiveLabel(){
   document.getElementById('liveLbl').textContent=liveMode?t('live_lbl_live'):t('live_lbl_shadow');
   const v=document.getElementById('modePill');v.textContent=liveMode?t('mode_live'):t('mode_shadow');v.style.color=liveMode?'var(--clay)':'var(--amber)';
@@ -1218,9 +1235,11 @@ async function doBuy(){
       const resp=await fetch(API+'/api/buy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({address:r.address||r.addr,size_sol:size,chain:curChain})});
       if(!resp.ok)throw new Error(await errDetail(resp));   // 带后端原因(如缺签名密钥/风控硬拦)
       const j=await resp.json();
-      // 文案以后端真实返回的 status 为准（SHADOW 不上链就别说“已真实下单”）
-      const filledLive=!String(j.status||'').includes('SHADOW');
-      toast(t('toast_buy',filledLive,j.symbol||r.sym,size),'ok');closeBuy();scanCycle();
+      // 文案严格按后端返回：SHADOW=只记录；LIVE 已成交=filled；LIVE 待确认=pending（都不谎报）
+      const sym=j.symbol||r.sym, st=String(j.status||'');
+      const kind=st.includes('SHADOW')?'sh':(j.filled?'live':'pending');
+      toast(t('toast_buy_v2',kind,sym,size,st),kind==='pending'?'err':'ok');
+      closeBuy();scanCycle();
     }catch(e){bs.textContent='';toast(t('toast_buy_fail',e.message),'err');}
     return;
   }

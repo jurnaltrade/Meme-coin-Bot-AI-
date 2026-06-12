@@ -799,7 +799,8 @@ def screen_once(chain: str) -> dict:
     rows_by_addr = {t["address"]: t for t in candidates if t.get("address")}
     positions_out = monitor_positions(chain, rows_by_addr)
 
-    return dict(decisions=decisions, portfolio=_portfolio(), positions=positions_out)
+    # 回传后端真实 mode：前端据此同步 LIVE/SHADOW 开关，避免重启后端后开关停留在 LIVE 误导
+    return dict(decisions=decisions, portfolio=_portfolio(), positions=positions_out, mode=ST.mode)
 
 # 公开演示缓存：后台线程定时刷新真实筛选结果，访客只读这份缓存（见 PUBLIC_DEMO 注释）。
 _PUBLIC_CACHE: dict = {"data": None, "err": None}
@@ -936,20 +937,39 @@ def do_buy(chain: str, address: str, size_sol: float) -> dict:
         except Exception as e:                       # gmgn-cli 报错(如缺签名密钥)→ 不建仓，回清晰错误
             log("BUY_FAIL", symbol, str(e))
             raise HTTPException(502, f"链上买入失败：{e}")
-        oid = order.get("order_id")
-        st = g.order_get(oid) if oid else order      # 轮询一次最新状态
-        status = st.get("status", order.get("status", "pending"))
-        if order.get("hash"):
-            status = f"{status} · {order['hash']}"    # 带上链上 tx hash 便于核对
+        # swap 直接带错误码 → 失败，不记仓
+        err = order.get("error_code") or order.get("error_status")
+        if err:
+            log("BUY_FAIL", symbol, str(err))
+            raise HTTPException(502, f"链上买入失败：{err}")
+        oid = order.get("order_id"); h = order.get("hash") or ""
+        status = order.get("status", "pending")
+        # 轮询订单直到终态（最多 ~6s）；不再"提交即报成功"
+        for _ in range(5):
+            if status in ("confirmed", "processed", "successful", "failed", "expired") or not oid:
+                break
+            time.sleep(1.0)
+            try:
+                stj = g.order_get(oid)
+            except Exception:
+                break
+            status = stj.get("status", status); h = stj.get("hash") or h
+        filled = status in ("confirmed", "processed", "successful")
+        if status in ("failed", "expired"):          # 明确未成交 → 不记仓、回清晰错误
+            log("BUY_FAIL", symbol, f"swap {status} {h}")
+            raise HTTPException(502, f"链上买入未成交（{status}）" + (f" · {h}" if h else ""))
+        status_msg = ("已成交" if filled else "已提交·待确认") + (f" · {h}" if h else "")
     else:
-        status = "SHADOW（未真实发送，需切 LIVE + 配签名密钥）"
+        filled = False
+        status_msg = "SHADOW（未真实发送，需切 LIVE + 配签名密钥）"
 
     ST.positions.append(dict(symbol=symbol, address=address, size_sol=round(size_sol, 4),
                              pnl=0.0, cycles=0, entry=entry, chain=chain,
                              entry_price=entry_price, cur_price=entry_price))
     save_positions()
-    log("BUY", symbol, f"{ST.mode} 成交 {size_sol} ({chain})", dict(size_sol=size_sol, chain=chain, **exit_plan()))
-    return dict(ok=True, status=status, symbol=symbol)
+    _verb = "成交" if filled else ("提交·待确认" if ST.mode == "LIVE" else "记录")
+    log("BUY", symbol, f"{ST.mode} {_verb} {size_sol} ({chain})", dict(size_sol=size_sol, chain=chain, **exit_plan()))
+    return dict(ok=True, status=status_msg, filled=filled, symbol=symbol)
 
 def do_sell(address: str) -> dict:
     idx = next((i for i, p in enumerate(ST.positions) if p["address"] == address), None)
