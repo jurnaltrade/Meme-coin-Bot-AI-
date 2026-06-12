@@ -16,7 +16,8 @@ aitrader/
 │   └── index.html         static/index.html 副本，供 GitHub Pages 发布
 ├── outputs/
 │   ├── trade_decisions.jsonl   运行时生成（SCREEN/FILTER/BUY/SELL/UNMONITOR 日志）
-│   └── positions.json          运行时生成（持仓落盘，重启不丢）
+│   ├── positions.json          运行时生成（持仓落盘，重启不丢）
+│   └── trending_cmds.json      运行时生成（按链热榜命令覆盖，重启不丢；齿轮内「↺ 重置」删回默认）
 ├── README.md
 └── SPEC.md
 ```
@@ -54,15 +55,17 @@ uvicorn app:app --host 127.0.0.1 --port 8000
 ## 使用
 - 默认 Mock 适配器 + SHADOW 模式，**不填 key 也能跑**（联调用）。
 - 配了 key 则自动连真实行情；右上齿轮可改每条链的热榜命令 / 轮询间隔。
-- 右上 CHAIN 下拉切换 **SOL / BSC / Base / ETH**（存浏览器 localStorage，不写 env）。
+- 右上 CHAIN 下拉切换 **SOL / BSC / Base / ETH**（每个 tab 用 sessionStorage 各自持链，多 tab 互不干扰）；右上 **MODE 图标点击切实盘/模拟盘**。
 - 通过全部闸门的候选会摆成「待你决策」，点「一键买入」才成交。
 - 持仓出现在右侧逃生监控，劣化到阈值（severity≥70）会弹「立即平仓」。
 
-## 成交是做假的（重要）
-`app.py` 顶部 `LIVE_TRADING_DISABLED=True` 硬锁死链上成交：
-**即使配了 key、即使切到 LIVE，也强制 SHADOW、绝不调用 `swap()`。**
-SHADOW 下买入/平仓只落日志 + 写 positions.json，不发任何链上交易。
-要真实下单需手动把该常量置 False，并核对代码里标注的 LIVE 占位项（钱包地址、卖出语义、`max_concurrent_positions` 调回保守值等，见 SPEC §10/§11）。
+## 实盘 / 模拟盘（重要）
+- **SHADOW（模拟盘）= 默认安全态**：买入/平仓只落日志 + 写 positions.json，**不发任何链上交易**。
+- **LIVE（实盘）= 真实成交、动用资金、不可逆**：需 ① 右上角 **MODE 图标点切到实盘**（会二次确认）+ ② `~/.config/gmgn/.env` 配好 `GMGN_PRIVATE_KEY`（Ed25519 PEM 签名密钥，非钱包私钥）。
+- `app.py` 顶部 `LIVE_TRADING_DISABLED`：**当前为 `False`（已解锁）**。置回 `True` 即可一键封死所有链上写（即便切 LIVE 也强制 SHADOW、绝不调 `swap()`）。
+- 仍是**人在环**：只有你点「一键买入/平仓」才成交；后端重启后 mode 回 SHADOW（不持久 LIVE），需重新切。
+- 买入会**轮询确认真实成交**：失败不记仓、不谎报；成交提示带 tx hash，自己点链上浏览器核对最稳。
+- ⚠️ 真实交易**目前仅 Solana 完整验证**；EVM 见下方「已知限制」。
 
 ## GitHub Pages 演示
 非 localhost（如 github.io）连不上后端时，前端**自动进 DEMO 模式**：显示示例数据、挂演示横幅、不发任何 fetch、不能下单（纯静态、零接口、零 key）。
@@ -72,7 +75,16 @@ SHADOW 下买入/平仓只落日志 + 写 positions.json，不发任何链上交
 - 后端只绑 127.0.0.1，切勿改成 0.0.0.0 或暴露公网。
 - key 只发往本机后端、写本机 .env、不入浏览器存储。
 
-## 待接入（代码里已标注，详见 SPEC §11）
+## 已知限制 / 待办
+
+**⚠ 买入时的自动卖出策略 —— 尚未实现**
+前端买入弹窗显示的「退出预案（硬止损 / TP 阶梯 / 移动止损）」目前**只是展示文案**（`exit_plan()`）。`do_buy` 真实下单调的 `swap()` **没有传 `--condition-orders`，实际并没有挂任何止盈止损单**，买入后只能靠人盯盘 + 逃生监控 + 手动平仓。待办：按 TP/SL 阶梯拼 `--condition-orders` 随 swap 一并提交（参数语义/各链支持度需对照真实接口验证）。
+
+**⚠ EVM 链筛选疑似有问题 —— 目前只有 Solana 完整跑通**
+- **Solana**：筛选 / 买 / 卖 / 持仓监控全链路已验证（含 `order quote` 实测签名）。
+- **EVM（BSC / Base / ETH）**：链路已接（adapter / 原生币 `0x0` / 18 位精度 / 钱包解析 / bsc 默认 fourmeme 平台命令均按权威表对齐），但**筛选结果疑似不对/不全、未完整验证，买卖也未实盘逐链验证**。疑点：EVM `market trending` 行字段是否与 `FeatureExtractor.build_from_row` / `hard_gates` 的 Solana 假设一致（`is_honeypot`/`renounced_mint`/`bundler_rate`/`buys/sells` 等可能命名不同或缺失 → 避雷门/动能打分跑偏）；base/eth 是否需按链配 launchpad 平台。**EVM 当前建议只作只读浏览，实盘前先查清 + 小额逐链验证。**
+
+**待接入（代码里已标注，详见 SPEC §11）**
 - `LLMJudge.judge`：现为动能启发式占位，生产换真实 LLM（喂消毒后的 symbol_safe + 数值，绝不喂原始币名）。
 - `priority_score`：现为确定性动能加权（对应文档的 ML 排序），可换轻量模型。
 - 反馈飞轮：trade_decisions.jsonl 已是原料，回填实际盈亏后用来调 CFG 阈值（当前只写不读）。
