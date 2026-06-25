@@ -1,5 +1,14 @@
+# Python
 __pycache__/
-*.pyc
+*.py[cod]
 .venv/
-.DS_Store
-.claude/
+*.egg-info/
+
+# Runtime outputs (use Railway Volume for persistence)
+aitrader/outputs/trade_decisions.jsonl
+aitrader/outputs/positions.json
+aitrader/outputs/trending_cmds.json
+
+# Secrets - NEVER commit these
+.env
+*.env
